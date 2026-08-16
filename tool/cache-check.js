@@ -44,18 +44,54 @@ function _toMessagesEndpoint(u) {
   return s + "/messages";
 }
 
+const HELP = `
+relay-cache-check —— 中转站 prompt cache 体检
+
+  node cache-check.js --url <站地址> --key <key> --model <模型标签> [选项]
+
+必填
+  --url <u>          站的地址。/v1、/v1/chat/completions、/v1/messages 都行，
+                     内部一律归一到 /v1/messages（走 OpenAI 那个门会吞掉 cache_control）
+  --key <k>          API key
+  --model <m>        模型标签，照抄站子给的那一串（「次」/「量」会影响结论）
+
+强烈建议
+  --prefix-file <f>  拿你真实的系统提示词当探针前缀。不给就退回 8k 填充文字，
+                     而「这个玩具能缓存」不等于「你六万八的负载能缓存」
+
+可选
+  --usage-file <f>   真实用量样本（JSONL，每行 {"in":..,"cw":..,"cr":..,"model":..,
+                     "url":"host","ep":0,"stream":1}）。不给这一块会明说跳过了
+  --fp-ring <f>      前缀指纹环（JSON 数组）。不给同样明说跳过
+  --no-stream        只测非流式（默认两条都测）
+  --no-thinking      请求里关掉扩展思考（**默认是开的** —— 开不开会改变行为：
+                     Anthropic 不允许「强制调工具 + 扩展思考」同时成立）
+  --endpoint-tools   标记为「端点清单」模式（只影响归档口径）
+  --json             只输出 JSON
+  --help             这一页
+
+🔴 它会真的打模型、真的花钱（实测 $0.33～$0.42 / 8 发），跑完报实际花费。
+🔴 它只发探针、只读回执，不往你的系统里写任何东西。
+🔴 它自己出过 22 个 bug，形状写在主文档 §8.3 —— 看一眼再信它的数字。
+`;
+
 async function main() {
   const _url = _toMessagesEndpoint(argv("url", ""));
   const _key = String(argv("key", "")).trim();
   const _model = String(argv("model", "")).trim();
+  // 🔴 `--help` 原来会走到下面那句「缺参数……看 --help」然后 exit 2 ——
+  // **一个让你去看 --help 的报错，本身就是 --help 的输出。** 外部 review 抓到的。
+  if (has("help") || has("h") || process.argv.length <= 2) { console.log(HELP); process.exit(0); }
   if (!_url || !_key || !_model) {
-    console.error("缺参数。至少要：--url --key --model\n看 --help 或 README。");
+    console.error("缺 --url / --key / --model。\n");
+    console.log(HELP);
     process.exit(2);
   }
   const _routeHost = String(_url).replace(/^https?:\/\//, "").split("/")[0];
   const _routeEp = has("endpoint-tools") ? 1 : 0;
   const _routeStream = has("no-stream") ? 0 : 1;
-  const _routeThinking = has("thinking") ? 1 : 0;
+  const _wantThinking = !has("no-thinking");
+  const _routeThinking = _wantThinking ? 1 : 0;
   const _prefixFile = argv("prefix-file", null);
   const _usageFile = argv("usage-file", null);
   const _fpRingFile = argv("fp-ring", null);
@@ -173,7 +209,11 @@ async function main() {
           cache_control: { type: "ephemeral" } }
       ],
       tool_choice: { type: "auto" },
-      thinking: { type: "enabled", budget_tokens: 1024 },
+      // 🔴 探针**默认开扩展思考**，因为开不开会改变行为（Anthropic 不允许
+      // 「强制调工具 + 扩展思考」同时成立，见 README §8.2）。
+      // 原来这里写死 enabled，而 `--thinking` 那个参数存进变量就再没用过 ——
+      // 文档说"用 --thinking 打开"，其实它一直是开的。改成 `--no-thinking` 能真关掉。
+      ...(_wantThinking ? { thinking: { type: "enabled", budget_tokens: 1024 } } : {}),
       messages: [{ role: "user", content: "说一个字：好" }]
     };
     if (_body.thinking) _body.max_tokens = 2048;
@@ -603,7 +643,15 @@ async function main() {
   const _count = await _countProbe();
 
   const _ns = await _pair("NS", false);
-  const _st = await _pair("ST", true);
+  // 🔴 `--no-stream` 原来只改了归档口径（`_routeStream`），**流式那两发照打不误** ——
+  // README 写着"只测非流式"，实际行为不是。外部 review 抓到的，别人一跑就能发现。
+  // 跳过的时候标 `blind:true`：**我们没测 ≠ 它不缓存**，所以下游那条
+  // 「非流式中了 + 流式没中 → 建议关流式」不许拿一发没打过的探针当证据。
+  const _st = _routeStream
+    ? await _pair("ST", true)
+    : { verdict: "没测（用了 --no-stream）", skipped: true, blind: true,
+        hit: undefined, thinking_back: undefined, saved: null,
+        detail: "这一组一发都没打 —— 不是没命中，是没测" };
   const _tools = await _toolProbe();
   // 等它真的结清再读，别 sleep 一下就当数（原来 prev=null 让 _billSettle 第一拍就返回）
   const _billEnd = await _billSettle(_billStart, 25000) ?? await _bill();
@@ -694,6 +742,11 @@ async function main() {
   // **而且顶上还挂着一个「省 89%」的大标题**。她："你说非流式才命中，
   // 但是又在建议里建议我开流式。"——两句话都对，摆在一起就是自相矛盾。
   // 门槛统一成跟 verdict 一样；证据强弱写进话里，不写进 if 里。
+  const _probeOnly = !_realEnough;
+  const _basisNote = _probeOnly
+    ? `（🔴 **这条不是拿上面那些缓存数字选的** —— 真实同通道${_real && _real.rounds ? `只有 ${_real.rounds} 轮` : "还没有样本"}，`
+      + `探针那点前缀说了不算。` + ((_ns.saved || _st.saved) ? `顶上那个「省 ${_ns.saved || _st.saved}」是探针自己省的。` : "") + `）`
+    : "";
   const _realSaysNo = _realEnough && _realSeen && !_realHit;
   if (_realSaysNo)
     _plan.choices.push({ name: "上游流式", value: _st.thinking_back && _ns.thinking_back === false ? "开" : "都行",
@@ -709,12 +762,11 @@ async function main() {
   // **一个字都不提上面那些缓存数字支撑不了这个建议**。
   // 用户早上问的就是这个形状：「测出来非流式才缓存，最终建议却写推荐流式」。
   // 改门槛只治了「证据反对」，没治「证据不足」。**两种都得说出来。**
-  const _probeOnly = !_realEnough;
-  const _basisNote = _probeOnly
-    ? `（🔴 **这条不是拿上面那些缓存数字选的** —— 真实同通道${_real && _real.rounds ? `只有 ${_real.rounds} 轮` : "还没有样本"}，`
-      + `探针那点前缀说了不算。` + ((_ns.saved || _st.saved) ? `顶上那个「省 ${_ns.saved || _st.saved}」是探针自己省的。` : "") + `）`
-    : "";
-  if (_st.thinking_back && _ns.thinking_back === false)
+  // 🔴🔴🔴 **这个 `else` 是 08-16 深夜漏掉的，而漏掉它的正是"修建议自相矛盾"的那个补丁。**
+  // 上面 `if (_realSaysNo)` 之后没有 else，于是真实证据反对时**两条都会 push**，
+  // 报告里出现两个「上游流式」，一个说"都行"，紧接着一个说"开"。
+  // 修矛盾的补丁自己造了一条矛盾 —— 外部 review 一眼看出来的。
+  else if (_st.thinking_back && _ns.thinking_back === false)
     _plan.choices.push({ name: "上游流式", value: "开",
       why: "关掉就没有思考链了，而且那部分 output token 照样收钱" + _basisNote });
   else if (_probeOnly)
@@ -772,7 +824,9 @@ async function main() {
                      // 刚打完的那一次也要有同一句话，不然她只在"复用"时看得见提示，
                      // 反过来就以为没提示 = 没测（同一个"沉默即正常"的坏习惯）。
                      run_kind: "刚测的",
-                     run_line: `🔬 这是刚测的 —— 真打了 ${_shots} 发探针，花了 ${_money(_total) || "?"}。10 分钟内再点会直接给这份结果，不会再花钱。`,
+                     // 🔴 服务端那版有 10 分钟复用缓存，命令行版没有（见文件末尾那段注释）。
+                     // 这句话原样抠过来就是错的：**这里每跑一次都真花钱。**
+                     run_line: `🔬 真打了 ${_shots} 发探针，花了 ${_money(_total) || "?"}。（命令行版每跑一次都会重新花钱，没有复用缓存）`,
                      // 全被站子挡回来的话，「打了 N 发花了 $0.0000」看着像 bug，得说明是没打成
                      blocked: !!(_st.unreachable && _ns.unreachable), plan: _plan,
                      // 这次探针撑的是什么前缀 —— **她有权知道这个结论是拿什么测出来的**

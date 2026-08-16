@@ -72,7 +72,7 @@ relay-cache-check —— 中转站 prompt cache 体检
 
 🔴 它会真的打模型、真的花钱（实测 $0.33～$0.42 / 8 发），跑完报实际花费。
 🔴 它只发探针、只读回执，不往你的系统里写任何东西。
-🔴 它自己出过 22 个 bug，形状写在主文档 §8.3 —— 看一眼再信它的数字。
+🔴 它自己出过 23 个 bug，形状写在主文档 §8.3 —— 看一眼再信它的数字。
 `;
 
 async function main() {
@@ -409,13 +409,14 @@ async function main() {
       // id 只能说明响应采用了哪种格式，不能证明中转站后面实际接的 provider / 模型。
       // 只有 id 明确暴露 gemini / OpenAI 时才能报协议或模型不一致；其余老实说不知道。
       //   cpa_gemini_ / gemini = 🔴 挂着 claude 的名，后面是 Gemini
-      //   chatcmpl-            = 被按 OpenAI 协议转换过，cache_control 必被吞
-      //   十六进制那种           = 站子自己编的，八成不是正牌
+      //   chatcmpl-            = 回来的是 OpenAI 那套格式，说明中转站把请求换过一道；
+      //                            **我们测到的那几条这样的链路上，cache_control 被吞了**（不敢说"必"）
+      //   十六进制那种           = 只能说明不是 Anthropic 常见的 id 形状，**据此判断不了后面是谁**
       const _ids = (String(_mid || "") + " " + String(_tool?.id || "")).toLowerCase();
       let _water, _label;
       if (/gemini/.test(_ids))            { _water = true;  _label = "🔴 掺水：回来的 id 里带 gemini —— 名字挂着 claude，后面接的是 Gemini"; }
       else if (/^gpt|openai/.test(_ids))  { _water = true;  _label = "🔴 掺水：id 指向 OpenAI"; }
-      else if (/chatcmpl/.test(_ids))     { _water = null;  _label = "返回的是 OpenAI chatcmpl 格式；说明发生了协议转换，但不能只凭 id 判断后端模型"; }
+      else if (/chatcmpl/.test(_ids))     { _water = null;  _label = "回来的是 OpenAI 那套格式 —— 中转站把请求换过一道；但光凭 id 判断不了后面是谁"; }
       else if (/toolu_bdrk_/.test(_ids))  { _water = null;  _label = "Bedrock 风格的工具 id；仅凭 id 不能证明实际来源或模型血统"; }
       else if (/req_vrtx_/.test(_ids))    { _water = null;  _label = "Vertex 风格的响应 id；仅凭 id 不能证明实际来源或模型血统"; }
       else if (/^msg_01/.test(String(_mid || ""))) { _water = null; _label = "Anthropic 格式 id；仅凭 id 不能证明直连或模型血统"; }
@@ -817,7 +818,11 @@ async function main() {
   // 最后把「缓存没测成的原因」补回去 —— 上面任何一条结论都不该把它吃掉
   if (_cacheNote && _advice !== _cacheNote)
     _advice += `（另外：缓存那两发没测成 —— ${_cacheNote.replace(/^[🔴⏳*\s]+/, "").replace(/\*\*/g, "")}）`;
-  console.log(`[cache-check] ${_model}: 流式=${_st.verdict} 非流式=${_ns.verdict} 工具=${_tools.verdict}(${_tools.mode || "?"}) 血统=${_tools.watered === true ? "掺水" : _tools.watered === false ? "正牌" : "认不出"} id=${_tools.mid || "?"} 计价=${_count.verdict} 真实=${_real.note || "?"} 本次花费=${_money(_total)}`);
+  // 🔴 这里原来是三分法：掺水 / **正牌** / 认不出。
+  // 可 `_water` 从头到尾只会是 `true` 或 `null` —— **`false` 那一档是死代码，永远不会走到**。
+  // 更要紧的是概念：看到别家的标识能证明「被换过」，
+  // 看到 `msg_01` 只证明「没看出被换过」，**那不叫正牌**。方向不对称，见 README §5。
+  console.log(`[cache-check] ${_model}: 流式=${_st.verdict} 非流式=${_ns.verdict} 工具=${_tools.verdict}(${_tools.mode || "?"}) 血统=${_tools.watered === true ? "被换过（回来的不是 Claude）" : "认不出（不代表有问题）"} id=${_tools.mid || "?"} 计价=${_count.verdict} 真实=${_real.note || "?"} 本次花费=${_money(_total)}`);
   const _payload = { ok: true, model: _model, stream: _st, nonstream: _ns, tools: _tools,
                      real: _real, counting: _count, prefix: _prefix, thinking: _think, version: _version,
                      probe_calls: _shots, probe_cost: _money(_total),

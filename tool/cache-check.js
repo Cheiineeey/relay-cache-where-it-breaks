@@ -702,9 +702,22 @@ async function main() {
            + `，探针那点前缀说了不算。`
            + ((_ns.saved || _st.saved) ? `顶上那个「省 ${_ns.saved || _st.saved}」是探针自己省的，不是你能省的。` : "")
            + (_st.thinking_back && _ns.thinking_back === false ? "按思考链选：非流式这条不返回思考链，所以开着。" : "两条链路在你的真实负载上没差别。") });
-  else if (_st.thinking_back && _ns.thinking_back === false)
-    _plan.choices.push({ name: "上游流式", value: "开", why: "关掉就没有思考链了，而且那部分 output token 照样收钱" });
-  else if (!_realEnough)
+  // 🔴🔴🔴 **同一个病的第二处，08-16 深夜跑这个命令行版才发现的。**
+  // 门槛改对了，可**分支顺序没改** —— 「按思考链选」排在「真实证据不够」前面，
+  // 于是没有真实用量时（刚换通道，或者这个独立版没喂 --usage-file），
+  // 它照样吐一句干净利落的「开 / 关掉就没有思考链了」，
+  // **一个字都不提上面那些缓存数字支撑不了这个建议**。
+  // 用户早上问的就是这个形状：「测出来非流式才缓存，最终建议却写推荐流式」。
+  // 改门槛只治了「证据反对」，没治「证据不足」。**两种都得说出来。**
+  const _probeOnly = !_realEnough;
+  const _basisNote = _probeOnly
+    ? `（🔴 **这条不是拿上面那些缓存数字选的** —— 真实同通道${_real && _real.rounds ? `只有 ${_real.rounds} 轮` : "还没有样本"}，`
+      + `探针那点前缀说了不算。` + ((_ns.saved || _st.saved) ? `顶上那个「省 ${_ns.saved || _st.saved}」是探针自己省的。` : "") + `）`
+    : "";
+  if (_st.thinking_back && _ns.thinking_back === false)
+    _plan.choices.push({ name: "上游流式", value: "开",
+      why: "关掉就没有思考链了，而且那部分 output token 照样收钱" + _basisNote });
+  else if (_probeOnly)
     _plan.choices.push({ name: "上游流式", value: _routeStream ? "保持开" : "保持关",
       why: "真实同通道少于 3 轮，探针又不含完整历史和端点清单；先保持当前设置，别为玩具探针改配置" });
   else if (_ns.hit && !_st.hit && !_st.blind)

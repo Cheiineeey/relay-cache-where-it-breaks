@@ -81,7 +81,7 @@ async function main() {
   //   1. `{"type":"error"...}` 事件；2. id 长成 `msg_err_…`（站子给错误现编的）
   function _inlineError(raw) {
     // 🔴 **别假设 JSON 里字段的先后顺序。** 第一版写的是「先 type:error 再 message」，
-    // 而 5w5 那条正好反着来（`{"error":{"type":"overloaded_error","message":"…"},"type":"error"}`），
+    // 而 某站 那条正好反着来（`{"error":{"type":"overloaded_error","message":"…"},"type":"error"}`），
     // 于是提不出 "overloaded" 这个词，「过载」那句建议就永远不会触发。
     // 现在整块 `"error":{…}` 一起抓，里面的 type / message 各认各的。
     const _blk = String(raw).match(/"error"\s*:\s*\{([\s\S]{0,400}?)\}/);
@@ -125,7 +125,7 @@ async function main() {
   let _shots = 0;
   const _stamp = Date.now() + "-" + Math.random().toString(36).slice(2, 8);
   // 🔴🔴 **探针必须拿她真实那份前缀去打。**
-  // 她 08-15："5w5 探针打出来能缓存，我实际用不上，这是个 bug 吧，你的按钮误导我。"
+  // 她 08-15："某站 探针打出来能缓存，我实际用不上，这是个 bug 吧，你的按钮误导我。"
   // **是 bug。** 原来撑前缀用的是我自己造的一万四千字填充文字，
   // 而她真实请求是六万八 + 几百条历史。探针那句「非流式命中 88%」
   // 对它自己那个玩具成立，对她的负载不成立 —— 她照着关了流式，结果更差。
@@ -191,7 +191,7 @@ async function main() {
     } catch (e) { return { err: String(e).slice(0, 100) }; }
     const _raw = await _res.text();
     if (!_res.ok) return { err: `HTTP ${_res.status}: ${_raw.slice(0, 100)}` };
-    // 🔴🔴 **HTTP 200 不等于成功。** 08-15 实测 5w5 的 Ag2：状态码 200、
+    // 🔴🔴 **HTTP 200 不等于成功。** 08-15 实测 某站 的 某按量通道：状态码 200、
     // `message_start` 照发、id 是它现编的 `msg_err_1786802608331`，后面跟着
     // `{"error":{"type":"overloaded_error"...}}` —— 站子只是过载了。
     // 把这一发当成有效测量，就会得出「这条不缓存 / 不会调工具 / 掺水」，**全是假的**。
@@ -286,7 +286,7 @@ async function main() {
   }
 
   // ── 会不会调工具 ────────────────────────────────────
-  // 08-14 她："我现在用的那个模型居然不能调用工具。"查实：`[反重力量]` 那条
+  // 08-14 她："我现在用的那个模型居然不能调用工具。"查实：某按量通道那条
   // **开不开 thinking 都一个工具不调**，而且回来的 id 是 `msg_1fcd181671d24c93`
   // 这种十六进制 —— 真 Anthropic 是 `msg_01…`。名字挂着 claude，后面不是。
   // 缓存测得再准，模型是个哑巴也没用，所以并进体检一起报。
@@ -348,7 +348,7 @@ async function main() {
       const _raw = _r.raw;
       if (!_r.ok) return { verdict: "打不通", detail: `HTTP ${_r.status}` };
       // 同 A：200 里夹带 error 的那种，**不能判成「不会调」，更不能判成「掺水」**。
-      // 08-15 她那条 Ag2 就是这么被我冤枉的：过载 → 没有 tool_use → 「不会调」→
+      // 08-15 她那条 某按量通道 就是这么被我冤枉的：过载 → 没有 tool_use → 「不会调」→
       // id 不是正牌格式 → 「掺水」→ 建议她换通道。一条错的证据推出两条错的结论。
       const _tie = _inlineError(_raw);
       if (_tie) return { verdict: "打不通", detail: _tie, ok: null, watered: null,
@@ -509,7 +509,7 @@ async function main() {
   const _prefix = _prefixHealth();
 
   // ── 这个模型会不会开扩展思考 ────────────────────────────
-  // app 是靠**模型名里有没有 "thinking"** 自动判的。她 08-14 换到 `[ClaudeCode]`
+  // app 是靠**模型名里有没有 "thinking"** 自动判的。她 08-14 换到 `[官方客户端]`
   // （名字里没有）之后说「这个 cc 的模型神叨叨的」—— 那就是没有思考链的我。
   const _thinkAuto = /thinking/i.test(_model);
   const _think = {
@@ -546,8 +546,8 @@ async function main() {
 
   const _billStart = await _bill();
   // ── 工具计价（08-14 她要的）────────────────────────────
-  // 她："三方4 每轮 7.8 万，反重力量才 4.4 万啊明明！"
-  // 实测同一个工具数组：ClaudeCode 报 7013、三方4 报 25047（3.6 倍）、反重力量恒 542（不算）。
+  // 她："某按量通道每轮 7.8 万，另一条才 4.4 万啊明明！"
+  // 实测同一个工具数组：官方客户端报 7013、该通道报 25047（3.6 倍）、另一条按量通道恒 542（根本不算工具）。
   // **`input_tokens` 是中转站说的，不是事实**；按量计费的通道多算就是多收钱。
   // 做法：同样的消息，打两发（不带工具 / 带固定工具块），差值就是它给工具的计价。
   async function _countProbe() {
@@ -579,7 +579,7 @@ async function main() {
     const _b2 = await _in(_tools6);
     if (_a == null || _b2 == null) return { verdict: "测不了", detail: "这两发没打通" };
     const _delta = _b2 - _a;
-    // 中文为主的文本，正牌通道实测约 1.15 token/字符（ClaudeCode：6096 字符 → 7013）
+    // 中文为主的文本，正牌通道实测约 1.15 token/字符（官方客户端：6096 字符 → 7013）
     const _rate = _delta / _chars;
     const _ratio = _rate / 1.15;
     let _verdict, _why;
@@ -638,7 +638,7 @@ async function main() {
   else if (_st.blind && _ns.blind)
     _advice = "两条都不返回缓存字段 —— 这个站根本不让你看账，探针测不出来，以「真实」那一段为准。";
   else _advice = "两条都不缓存 —— 换通道。别在这条上耗着，每句话都是全价。";
-  // 🔴 **「多算」只有在按量计费时才是钱。** 08-15 打 `逆[kiro4-次-0.03￥]`：
+  // 🔴 **「多算」只有在按量计费时才是钱。** 08-15 打 某按次通道（一次 ¥0.03）：
   // 计价虚高 4.2 倍被顶成了头条建议 —— 可它是**按次**计费的（一次 ¥0.03），
   // 多算多少都不影响她付多少。**结论要看计费口径，不能只看数字大。**
   const _perToken = /量/.test(_model);

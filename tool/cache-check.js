@@ -349,7 +349,10 @@ async function main() {
     }
     async function _shot(choice) {
       const _body = {
-        model: _model, max_tokens: 1024, stream: true,
+        // 🔴 **给思考留够 token，否则你测的是「它能不能在 1024 token 内想完」。**
+        // 模型名里带 thinking 的通道会自动开扩展思考，思考先把额度吃光，
+        // 根本轮不到吐 tool_use —— 回来的 stop_reason 是 max_tokens。
+        model: _model, max_tokens: 4096, stream: true,
         system: [{ type: "text", text: "你是韩屿。需要用工具的时候直接用，别问。" }],
         tools: [{ name: "her_heart", description: "看她此刻的心率。",
                   input_schema: { type: "object", properties: { minutes: { type: "number" } } } }],
@@ -426,14 +429,23 @@ async function main() {
       else if (!_mid)                     { _water = null;  _label = "这一发没拿到 id，认不出血统（不代表有问题）"; }
       else                                { _water = null;  _label = `id=${String(_mid).slice(0, 22)}，格式认不出；不能据此判定后端模型`; }
       const _forced = _forcedOK;
+      // 🔴🔴 **`stop_reason=max_tokens` 是「没说完」，不是「不会」。**
+      // 一条在真实对话里天天调工具的通道，被这里判成「不会调工具 → 换通道」。
+      // 同 §2：把「没测出来」塞进「测出来是坏的」那一档，
+      // 而这一次的代价是**劝人换掉一条好通道**。
+      const _cut = !_tool && _stop === "max_tokens";
       return {
         // 没强制成功的时候，「没调」只能说明它这一轮没选择调，**不能判成不能调**
-        verdict: _tool ? "会调" : (_forced ? "不会调" : "这轮没调（非强制，不算数）"),
-        ok: _tool ? true : (_forced ? false : null),
+        verdict: _tool ? "会调"
+               : (_cut ? "没测出来（它想太久，token 用完了）"
+               : (_forced ? "不会调" : "这轮没调（非强制，不算数）")),
+        ok: _tool ? true : (_cut ? null : (_forced ? false : null)),
         mode: _mode,
         detail: _tool
           ? `调了 ${_tool.name}，工具 id ${String(_tool.id).slice(0, 14)}… stop=${_stop}（${_mode}）`
-          : `一个工具都没调，stop=${_stop}（${_mode}）`,
+          : (_cut
+              ? `没测出来：输出到 max_tokens 就被截断了（${_mode}）—— 扩展思考吃光了 token，不代表它不会调工具`
+              : `一个工具都没调，stop=${_stop}（${_mode}）`),
         watered: _water,
         mid: String(_mid || ""),
         genuine: _label

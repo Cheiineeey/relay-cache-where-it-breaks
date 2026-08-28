@@ -112,7 +112,21 @@ async function main() {
       return typeof j.total_usage === "number" ? j.total_usage : null;
     } catch (_e) { return null; }
   }
-  const _money = (c) => c == null ? null : "$" + (c / 100).toFixed(4);
+  // 🔴🔴 第 29 条（2026-08-29 改写）：**这个 `$` 和这个 `/100` 都是我们自己编的。**
+  // 站子 `/v1/dashboard/billing/usage` 回的是 `{"total_usage": 6592.224}` ——
+  // 一个**没有量纲的数字**。它长得像 OpenAI 那个接口，我们就默认了「单位是美分」。
+  //
+  // 实测（同一条通道，单发对照）：`input 434 + output 13` → 账单涨 **19.96**。
+  // 把这个数拿给账号的主人看，ta 一眼就说出了那一发实际花了多少 ——
+  // 跟我们印出来的**差了将近一个量级**。
+  // `/100`（子单位 → 主单位）那步是对的，**错的是那个币种符号**：
+  // 抄 OpenAI 这个接口的时候，把它一起抄了过来。数值一直是对的。
+  //
+  // 🔴 但这不改变这一条的性质：**我们从来没有依据说它是什么单位**，
+  // 只是「它长得像 OpenAI 的接口」。这次碰巧只错了个符号，
+  // 而且是账号主人自己知道单位、一眼看出来的 —— 换个站、换个读者，就没这个运气。
+  // 所以这份开源版只报原始数字：**你的站是什么单位，只有你知道。**
+  const _money = (c) => c == null ? null : c.toFixed(2) + " 额度";
   // 从 SSE 流 / JSON 正文里把「200 但其实是错」揪出来。两个信号：
   //   1. `{"type":"error"...}` 事件；2. id 长成 `msg_err_…`（站子给错误现编的）
   function _inlineError(raw) {
@@ -288,27 +302,66 @@ async function main() {
     // 她同时在聊天、有推送，也往同一个格子里加钱。**账单差值不能用来算比例。**
     // 改成按 token 折算 —— Anthropic 的口径是：普通 1x、缓存写 1.25x、缓存读 0.1x。
     // 折成「等价全价 token」再比，不依赖账单，也不用知道这条通道打几折。
-    const _units = (x) => (x.in || 0) + (x.w || 0) * 1.25 + (x.r || 0) * 0.1;
+    // 🔴🔴 2026-08-29（第 27 条）：**有的站子的 `input_tokens` 已经含着 cache_read。**
+    // 证据就在同一行 detail 里：
+    //   第一发 in=21860 w=0 r=0 ｜ 第二发 in=21860 w=0 r=21523
+    // 两发发的是同一段前缀。按 Anthropic 官方口径，命中之后第二发的 in
+    // 应该只剩没命中的那几百 —— 它却一个字都没少，说明 in ⊇ r。
+    // 而下面这个 _units 又把 r 乘 0.1 加了第二遍：21860 → 24012，
+    // 「省」算出来是 1 - 24012/21860 = **-10%**。命中越多，这个数越负。
+    // 判据要两条同时成立：① 这一发命中了；② 命中之后 in 几乎没缩水（≥ 冷启的 95%）。
+    const _inclusive = !_blind && (_b.r || 0) > 0 && (_b.in || 0) >= (_b.r || 0)
+                       && (_a.in || 0) > 0 && (_b.in || 0) >= (_a.in || 0) * 0.95;
+    // 缓存写那一档没法这样验（这两发 w 都是 0，没有样本），照旧全额算 —— 宁可高估自己的成本。
+    const _units = (x) => (_inclusive
+        ? Math.max(0, (x.in || 0) - (x.r || 0)) + (x.r || 0) * 0.1
+        : (x.in || 0) + (x.r || 0) * 0.1) + (x.w || 0) * 1.25;
     const _cu = _units(_a), _hu = _units(_b);
     // 🔴 瞎的时候 token 一律给 null，**不给 0**。
     // 「没打中 0 token」是个假的零 —— 假的零比没有数字更糟（08-14 自己写下的那句）。
     // 基线已经热的时候，「没打中」那一栏根本不是没打中 —— 它是又一个假的事实。
     // 宁可印「看不到」，也不能把一个命中的数字挂在「没打中」下面（同 08-15 那个假的零）。
-    const _coldTok = (_blind || _baseHot) ? null : (_a.in || 0) + (_a.w || 0) + (_a.r || 0);
-    const _hotTok  = _blind ? null : (_b.in || 0) + (_b.w || 0) + (_b.r || 0);
+    // in 已经含着 r 的时候不能再加一遍，否则「打中」那一栏会凭空翻倍
+    // （21860 + 21523 = 43383，而两发发的是同一段东西 —— 这个自相矛盾本身就该报警）。
+    const _coldTok = (_blind || _baseHot) ? null
+        : (_a.in || 0) + (_a.w || 0) + (_inclusive ? 0 : (_a.r || 0));
+    const _hotTok  = _blind ? null
+        : (_b.in || 0) + (_b.w || 0) + (_inclusive ? 0 : (_b.r || 0));
     const _savedTok = (!_blind && !_baseHot && _cu > 0) ? Math.round((1 - _hu / _cu) * 100) : null;
     const _savedBill = (!_baseHot && _cold != null && _hot != null && _cold > 0)
                        ? Math.round((1 - _hot / _cold) * 100) : null;
     // 两个口径差得离谱的时候直说，别让她以为哪个是错的 —— 是账单那个不可信
-    const _savedNote = _baseHot
+    let _savedNote = _baseHot
       ? "第一发就直接读到了缓存（w=0 r>0），这一组的「没打中」基线是假的 —— 能命中是真的，能省多少这次没测出来，不是打不中"
       : (_savedTok != null && _savedBill != null && Math.abs(_savedTok - _savedBill) >= 15)
       ? `按 token 折算是 ${_savedTok}%，按账单差值算是 ${_savedBill}% —— 以 token 为准，账单是账号级计数器，体检时你在聊天或有推送都会算进去`
       : null;
+    // 🔴 这里原来写着一条「每百万 token $597，所以账单一定被并行请求污染了」的警告。
+    // **那条是错的**，留在 README 第 29 条里当碑：看见一个离谱的数，
+    // 我没去验单位，而是编了一个听起来很顺的解释。
+    // 现在只报同一个站内可比的东西：每千 token 花掉多少额度。
+    const _perK = (tok, c) => (tok && c != null && tok > 0) ? (c / tok * 1000) : null;
+    const _cpk = _perK(_coldTok, _cold);
+    if (_cpk != null) {
+      _savedNote = (_savedNote ? _savedNote + "。" : "")
+        + `旁边那两个数是**站子自己的额度单位，不是美元** —— 这次每千 token 花掉约 ${_cpk.toFixed(1)} 额度。`
+        + `同一个站内这个比例可以横着比（换通道前后、开关端点清单前后）；`
+        + `换算成钱要看充值时的比例，那个只有账号的主人知道。`;
+    }
+    // 🔴 2026-08-29（第 28 条）：**「看不见」被印成了「没命中」。**
+    // 实测：流式那组两发都 w=0 r=0、in 一模一样，界面印「没命中 · 省 0%」，
+    // 而同一次账单差值是 -86%。钱省了就是命中了 —— 站子只是在流式这条链路上
+    // 不返回缓存字段。上面那个 _blind 只认 in=0 的全零，认不出「in 有数、缓存栏全 0」。
+    // 把看不见说成没命中，会让读者照着一个假结论去关掉流式。
+    const _silentHit = !_blind && !_hit && !(_a.w || 0) && !(_b.w || 0)
+                       && _savedBill != null && _savedBill >= 30;
     return {
       verdict: _hit ? (_baseHot ? "命中（省多少没测成）" : "命中")
-                    : (_blind ? "站子不返回缓存字段（瞎的）" : "没命中"),
+                    : (_blind ? "站子不返回缓存字段（瞎的）"
+                    : (_silentHit ? "看不见（缓存栏全 0，但账单降了）" : "没命中")),
       hit: _hit,
+      silent_hit: _silentHit,
+      inclusive_in: _inclusive,
       blind: _blind,
       baseline_hot: _baseHot,
       cold_tokens: _coldTok, cold_cost: _baseHot ? null : _money(_cold),
@@ -318,7 +371,9 @@ async function main() {
       thinking_back: !!(_a.think || _b.think),
       saved: _savedTok == null ? null : _savedTok + "%",
       saved_note: _savedNote,
-      detail: `第一发 in=${_a.in} w=${_a.w} r=${_a.r} (${_a.ms}ms) ｜ 第二发 in=${_b.in} w=${_b.w} r=${_b.r} (${_b.ms}ms)`,
+      detail: `第一发 in=${_a.in} w=${_a.w} r=${_a.r} (${_a.ms}ms) ｜ 第二发 in=${_b.in} w=${_b.w} r=${_b.r} (${_b.ms}ms)`
+            + (_inclusive ? ` ｜ ⚠️ 这条站子的 in 把缓存读的那部分也算在里面了（命中之后 in 一点没缩），已按扣掉 r 之后折算` : "")
+            + (_silentHit ? ` ｜ ⚠️ 缓存栏全是 0 但账单降了 ${_savedBill}% —— 是它不给你看账，不是没命中` : ""),
       backend: String(_b.id || "").startsWith("msg_01") ? "Anthropic 格式响应（仅凭 id 不能证明直连）" :
                String(_b.id || "").startsWith("req_vrtx") ? "Vertex 格式响应（仅凭 id 不能证明来源）" :
                String(_b.id || "").startsWith("chatcmpl") ? "被转成 OpenAI 协议（必丢 cache_control）" : String(_b.id || "?").slice(0, 16)
@@ -458,7 +513,10 @@ async function main() {
   // 原始版本直接读自己的库；独立版靠 `--usage-file` 喂一份 JSONL，每行形如：
   //   {"in":8411,"cw":4125,"cr":133923,"model":"...","url":"host","ep":0,"stream":1}
   // 没有就跳过这一块 —— **跳过要说出来，不能默默当成「没命中」**（README §2）。
-  function _realUsage() {
+  // `_incl` = 探针测出来「这条站子的 in 已经含着 cache_read」。
+  // 不传的话这里会跟上面犯同一个双算错：真实轮次一旦开始命中，
+  // 「平均每轮 token」和总量都会凭空翻倍（第 30 条，一颗还没炸的雷）。
+  function _realUsage(_incl) {
     if (!_usageFile) {
       return { rounds: 0, blind: 0, hit_rounds: 0, for_model: false, avg_total: null,
                note: "没给 --usage-file，这一块跳过了。**探针只是旁证，真实用量才是证据**（README §6）" };
@@ -470,7 +528,7 @@ async function main() {
       for (const _line of _rows) {
         try {
           const _u = JSON.parse(_line);
-          const _tot = (_u.in || 0) + (_u.cw || 0) + (_u.cr || 0);
+          const _tot = (_u.in || 0) + (_u.cw || 0) + (_incl ? 0 : (_u.cr || 0));
           const _route = { model: _u.model, url: _u.url || "", ep: Number(_u.ep || 0), stream: Number(_u.stream ?? 1) };
           if (_tot === 0) { _all.push({ blind: true, ..._route }); continue; }
           _all.push({ in: _u.in || 0, cw: _u.cw || 0, cr: _u.cr || 0, total: _tot,
@@ -499,7 +557,7 @@ async function main() {
       };
     } catch (e) { return { error: String(e).slice(0, 80) }; }
   }
-  const _real = _realUsage();
+  // （`_real` 挪到两组探针之后再算 —— 它要用探针测出来的「in 含不含 r」。）
 
   // ── 前缀稳不稳（这两天最贵的那一课）────────────────────
   // 缓存前缀 = tools → system → messages。**任何一段变了，后面全废。**
@@ -665,6 +723,7 @@ async function main() {
     : { verdict: "没测（用了 --no-stream）", skipped: true, blind: true,
         hit: undefined, thinking_back: undefined, saved: null,
         detail: "这一组一发都没打 —— 不是没命中，是没测" };
+  const _real = _realUsage(!!(_ns.inclusive_in || _st.inclusive_in));
   const _tools = await _toolProbe();
   // 等它真的结清再读，别 sleep 一下就当数（原来 prev=null 让 _billSettle 第一拍就返回）
   const _billEnd = await _billSettle(_billStart, 25000) ?? await _bill();
@@ -843,7 +902,7 @@ async function main() {
                      run_kind: "刚测的",
                      // 🔴 服务端那版有 10 分钟复用缓存，命令行版没有（见文件末尾那段注释）。
                      // 这句话原样抠过来就是错的：**这里每跑一次都真花钱。**
-                     run_line: `🔬 真打了 ${_shots} 发探针，花了 ${_money(_total) || "?"}。（命令行版每跑一次都会重新花钱，没有复用缓存）`,
+                     run_line: `🔬 真打了 ${_shots} 发探针，账号扣了 ${_money(_total) || "?"}（**站子自己的单位，不是美元**）。（命令行版每跑一次都会重新花钱，没有复用缓存）`,
                      // 全被站子挡回来的话，「打了 N 发花了 $0.0000」看着像 bug，得说明是没打成
                      blocked: !!(_st.unreachable && _ns.unreachable), plan: _plan,
                      // 这次探针撑的是什么前缀 —— **她有权知道这个结论是拿什么测出来的**

@@ -216,9 +216,9 @@ async function main() {
       model: _model, max_tokens: 16, stream,
       system: [{ type: "text", text: _filler(tag), cache_control: { type: "ephemeral" } }],
       tools: [
-        { name: "her_heart", description: "看她此刻的心率。" + "（这段描述只是用来把工具块撑到真实体量）".repeat(40),
-          input_schema: { type: "object", properties: { minutes: { type: "number" } } } },
-        { name: "search_memories", description: "搜我们的记忆。" + "（同上，撑体量）".repeat(40),
+        { name: "get_weather", description: "查当前天气。" + "（这段描述只是用来把工具块撑到真实体量）".repeat(40),
+          input_schema: { type: "object", properties: { city: { type: "string" } } } },
+        { name: "search_docs", description: "搜索一批文档。" + "（同上，撑体量）".repeat(40),
           input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
           cache_control: { type: "ephemeral" } }
       ],
@@ -411,11 +411,11 @@ async function main() {
         // 但对着"思考没有天然收敛点"的模型，16000 照样能被吃穿。这里给到 16000
         // 只是把墙推得更远，别指望它能根治，真正的解法在下面 `_realToolEvidence`。
         model: _model, max_tokens: 16000, stream: true,
-        system: [{ type: "text", text: "你是韩屿。需要用工具的时候直接用，别问。" }],
-        tools: [{ name: "her_heart", description: "看她此刻的心率。",
-                  input_schema: { type: "object", properties: { minutes: { type: "number" } } } }],
+        system: [{ type: "text", text: "你是一个助手。需要用工具的时候直接用，别问。" }],
+        tools: [{ name: "get_weather", description: "查当前天气。",
+                  input_schema: { type: "object", properties: { city: { type: "string" } } } }],
         tool_choice: choice,
-        messages: [{ role: "user", content: "我心跳好快，你看一下我现在心率多少" }]
+        messages: [{ role: "user", content: "外面天气怎么样，帮我查一下" }]
       };
       _shots++;
       const _r = await fetch(_url, {

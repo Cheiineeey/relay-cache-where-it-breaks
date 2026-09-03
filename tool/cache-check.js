@@ -407,7 +407,10 @@ async function main() {
         // 🔴 **给思考留够 token，否则你测的是「它能不能在 1024 token 内想完」。**
         // 模型名里带 thinking 的通道会自动开扩展思考，思考先把额度吃光，
         // 根本轮不到吐 tool_use —— 回来的 stop_reason 是 max_tokens。
-        model: _model, max_tokens: 4096, stream: true,
+        // 🔴🔴 见第 31 条：这个数字**治标不治本**——从 1024 提到 4096 治好了一次，
+        // 但对着"思考没有天然收敛点"的模型，16000 照样能被吃穿。这里给到 16000
+        // 只是把墙推得更远，别指望它能根治，真正的解法在下面 `_realToolEvidence`。
+        model: _model, max_tokens: 16000, stream: true,
         system: [{ type: "text", text: "你是韩屿。需要用工具的时候直接用，别问。" }],
         tools: [{ name: "her_heart", description: "看她此刻的心率。",
                   input_schema: { type: "object", properties: { minutes: { type: "number" } } } }],
@@ -419,7 +422,9 @@ async function main() {
         method: "POST",
         headers: { "Content-Type": "application/json", "Authorization": "Bearer " + _key, "x-api-key": _key,
                    "anthropic-version": "2023-06-01", "anthropic-beta": "prompt-caching-2024-07-31" },
-        body: JSON.stringify(_body), signal: AbortSignal.timeout(120000)
+        // max_tokens 提大了，思考更久也得给更长的墙钟时间，不然会从
+        // "token 用完"换成"网络超时"这个新的假阴性——同一个病换了个马甲。
+        body: JSON.stringify(_body), signal: AbortSignal.timeout(180000)
       });
       return { ok: _r.ok, status: _r.status, raw: await _r.text() };
     }
@@ -558,6 +563,29 @@ async function main() {
     } catch (e) { return { error: String(e).slice(0, 80) }; }
   }
   // （`_real` 挪到两组探针之后再算 —— 它要用探针测出来的「in 含不含 r」。）
+
+  // 🔴🔴 第 31 条：`_toolProbe` 把 max_tokens 从 4096 提到 16000 依旧测不出——
+  // 对着一个思考没有天然收敛点的模型，**加钱这条路走不通**。真正管用的是换一个
+  // 完全不需要它"这一发"配合的证据源：你自己真实对话里有没有真的调用成功过。
+  // 同一份 `--usage-file`，每行多认一个可选字段 `tool_used`（true/false，
+  // 没有就跳过，不强求）：
+  //   {"in":...,"cw":...,"cr":...,"model":"...","url":"host","ep":0,"stream":1,"tool_used":true}
+  function _realToolEvidence() {
+    if (!_usageFile) return 0;
+    try {
+      const _rows = fs.readFileSync(String(_usageFile), "utf8").split("\n")
+                      .map(s => s.trim()).filter(Boolean);
+      let _hits = 0;
+      for (const _line of _rows) {
+        try {
+          const _u = JSON.parse(_line);
+          if (_u.tool_used === true && _u.model === _model && (_u.url || "") === _routeHost
+              && Number(_u.ep || 0) === _routeEp && Number(_u.stream ?? 1) === _routeStream) _hits++;
+        } catch (_e) {}
+      }
+      return _hits;
+    } catch (e) { return 0; }
+  }
 
   // ── 前缀稳不稳（这两天最贵的那一课）────────────────────
   // 缓存前缀 = tools → system → messages。**任何一段变了，后面全废。**
@@ -725,6 +753,15 @@ async function main() {
         detail: "这一组一发都没打 —— 不是没命中，是没测" };
   const _real = _realUsage(!!(_ns.inclusive_in || _st.inclusive_in));
   const _tools = await _toolProbe();
+  // 探针没测出来/没调 时，拿真实记录里的证据把话说完——别让一句"没测出来"
+  // 孤零零地留在那儿，像是真的不知道。
+  if (_tools && _tools.ok !== true) {
+    const _realHits = _realToolEvidence();
+    if (_realHits > 0) {
+      _tools.detail += `　—— 但真实记录里，这条通道已经成功调用过工具 ${_realHits} 次，这条通道能用工具是确定的，不用管这个探针的结果。`;
+      _tools.realHits = _realHits;
+    }
+  }
   // 等它真的结清再读，别 sleep 一下就当数（原来 prev=null 让 _billSettle 第一拍就返回）
   const _billEnd = await _billSettle(_billStart, 25000) ?? await _bill();
   // 体检本身花了多少 —— 她有权在点之前就知道，也有权在点完看到账单对不对得上
@@ -775,7 +812,9 @@ async function main() {
       ? `ℹ️ 这条**${_count.verdict}**地计算工具 token（${_count.detail}）—— 但它名字里带「次」，是**按次计费**的，多算不影响你付多少，这条可以不管。`
       : `🔴 这条通道**${_count.verdict}**地计算工具 token（${_count.detail}）。按量计费的话你一直在多付。`;
   }
-  if (_tools.ok === false) _advice = "🔴 这条通道**不会调工具**（" + (_tools.genuine || "") + "）。缓存再省也没用，换通道。";
+  // 第 31 条：加了 `_tools.realHits` 之后，这里跟下面「该怎么选」都得一起看它，
+  // 不然会出现"detail 说真实调用过 N 次"跟"advice 说不会调工具、换通道"同屏打架。
+  if (_tools.ok === false && !_tools.realHits) _advice = "🔴 这条通道**不会调工具**（" + (_tools.genuine || "") + "）。缓存再省也没用，换通道。";
   // 🔴 别把 `genuine` 再塞进建议里 —— app 上面已经单独显示了那一行，
   // 于是同一句「掺水：id 里带 gemini…」在屏幕上出现两次（08-15 她截图里就是）。
   // **同一个事实说一遍就够，重复只会让人以为是两个问题。**
@@ -870,6 +909,9 @@ async function main() {
       why: "名字挂着 claude，后面接的不是 —— **缓存和计价在这条上怎么测都不作数**。"
            + (_perTok ? "而且它按量计费，多算就是多收钱。" : "")
            + "但好不好用你说了算：觉得它答得好就留着，只要知道这些数字别当真。" });
+  else if (_tools && _tools.ok === false && _tools.realHits)
+    _plan.choices.push({ name: "这条通道", value: "可以留",
+      why: `强测这一发它没调，但真实记录里已经成功调用过 ${_tools.realHits} 次 —— 这条通道能用工具是确定的，这次强测的结果不算数。` });
   else if (_tools && _tools.ok === false)
     _plan.choices.push({ name: "这条通道", value: "建议换，具体看使用体验",
       why: "强制它调工具它也不调 —— 缓存再省也没用。**只聊天不调工具的话它还是能用的**，看你拿它干什么。" });

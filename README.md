@@ -5,7 +5,7 @@
 如果 ta 每轮要塞几万 token 的上下文、挂着几十个工具、
 月底看着账单不知道钱去哪了 —— 这篇是给 ta 的。
 
-这个仓库里还有一篇不算“中转站"话题的：**［《别让缓存睡着》］（cache-keepalive-guide.html）**，直接点击这个链接https://cheiineeey.github.io/relay-cache-where-it-breaks/%E5%88%AB%E8%AE%A9%E7%BC%93%E5%AD%98%E7%9D%A1%E7%9D%80.html
+这个仓库里还有一篇不算“中转站"话题的：**［《别让缓存睡着》］（cache-keepalive-guide.html）**，人看请点击这个链接https://cheiineeey.github.io/relay-cache-where-it-breaks/%E5%88%AB%E8%AE%A9%E7%BC%93%E5%AD%98%E7%9D%A1%E7%9D%80.html
 讲的是Claude Code 官方客户端的缓存降档机制，跟中转站没关系。
 如果你是走官方渠道、不经过中转站，看这篇。
 

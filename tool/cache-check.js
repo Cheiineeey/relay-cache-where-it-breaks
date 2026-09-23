@@ -87,6 +87,10 @@ async function main() {
     console.log(HELP);
     process.exit(2);
   }
+  if (!/^https:\/\//i.test(_url)) {
+    console.error("--url 必须是 https://，拒绝在明文 HTTP 上发送 API key。\n");
+    process.exit(2);
+  }
   const _routeHost = String(_url).replace(/^https?:\/\//, "").split("/")[0];
   const _routeEp = has("endpoint-tools") ? 1 : 0;
   const _routeStream = has("no-stream") ? 0 : 1;
